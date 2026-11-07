@@ -3,6 +3,7 @@
 #include <math.h>
 
 #include "app_state.h"
+#include "battery.h"
 #include "config.h"
 #include "voice_frontend.h"
 
@@ -14,6 +15,9 @@ static uint32_t flashUntil = 0, volumeUntil = 0;
 static uint8_t flashRgb[3];
 static uint8_t shownVolume = 0;
 static bool pending = false;
+static uint32_t batteryUntil = 0;
+static uint8_t shownBattery = 0;
+static bool shownCharging = false;
 
 static void show() {
   if (!ready) return;
@@ -68,6 +72,12 @@ void ledsVolume(uint8_t volume) {
 
 void ledsSetPendingMessage(bool on) { pending = on; }
 
+void ledsBattery(uint8_t percent, bool charging) {
+  shownBattery = percent;
+  shownCharging = charging;
+  batteryUntil = millis() + 3000;
+}
+
 void ledsUpdate() {
   static uint32_t last = 0;
   uint32_t now = millis();
@@ -79,7 +89,13 @@ void ledsUpdate() {
   float t = now / 1000.0f;
   memset(px, 0, sizeof(px));
 
-  if (now < volumeUntil) {
+  if (now < batteryUntil) {
+    int lit = (shownBattery * LED_RING_COUNT + 99) / 100;
+    if (lit < 1) lit = 1;
+    uint8_t r = shownBattery >= 50 ? 0 : 220, g = shownBattery >= 50 ? 180 : shownBattery >= 20 ? 120 : 0;
+    for (int i = 0; i < lit && i < LED_RING_COUNT; i++) fill(i, 1, r, g, 0);
+    if (shownCharging && lit < LED_RING_COUNT && (now / 500) % 2) fill(lit, 1, r / 3, g / 3, 0);
+  } else if (now < volumeUntil) {
     int lit = (shownVolume * LED_RING_COUNT + 50) / 100;
     for (int i = 0; i < LED_RING_COUNT; i++) {
       if (i < lit) fill(i, 1, 120, 120, 120);
@@ -133,7 +149,14 @@ void ledsUpdate() {
   }
   // A barra frontal acompanha o anel, mais suave; em espera fica com um brilho mínimo de presença.
   uint8_t br = px[0][0], bg = px[0][1], bb = px[0][2];
-  if (br == 0 && bg == 0 && bb == 0 && app.mode == Mode::Idle) {
+  const BatteryStatus &bat = battery();
+  bool quiet = br == 0 && bg == 0 && bb == 0 && (app.mode == Mode::Idle || app.mode == Mode::Muted);
+  if (quiet && bat.charging) {
+    float f = 0.5f + 0.5f * sinf(t * 1.5f);
+    bar(0, 6 + 20 * f, 0);
+  } else if (quiet && bat.present && !bat.powered && bat.percent <= BATTERY_LOW_PCT) {
+    if (now % 5000 < 250) bar(60, 0, 0);
+  } else if (br == 0 && bg == 0 && bb == 0 && app.mode == Mode::Idle) {
     bar(12, 5, 1);
   } else {
     bar(br / 2, bg / 2, bb / 2);

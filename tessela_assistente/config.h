@@ -1,10 +1,10 @@
-// Tessela Assistente — configuração da placa "Assistente IA" v1.2 (ESP32-S3-WROOM-1-N16R8).
+// Tessela Assistente — configuração da placa "Assistente IA" v1.3 (ESP32-S3-WROOM-1-N16R8, com bateria).
 // Os pinos seguem o esquemático (Assistente_IA.kicad_sch / LEIA-ME.md da placa).
 #pragma once
 
 #include <Arduino.h>
 
-#define FIRMWARE_VERSION "1.0.0"
+#define FIRMWARE_VERSION "1.1.0"
 #define DEVICE_MODEL "tessela-assistente-esp32s3"
 
 // ------------------------------------------------------------------ áudio
@@ -44,6 +44,21 @@
 #define PIN_RTC_INT 11
 #define DS3231_ADDR 0x68
 
+// ------------------------------------------------------------------ bateria (v1.3)
+// BQ24074 carrega a bateria pelo USB-C (1 A) e alimenta o sistema ao mesmo tempo (power-path).
+// LC709203F mede a carga (%) no mesmo I2C do RTC. O interruptor LIGAR/DESLIGAR corta o sistema,
+// mas a bateria continua a carregar com o assistente desligado.
+#define PIN_PWR_GOOD 10              // LOW = cabo USB-C ligado (PGOOD do BQ24074, pull-up 10k)
+#define LC709203F_ADDR 0x0B
+#define BATTERY_APA 0x36             // LC709203F: valor APA para 3000 mAh (tabela do datasheet)
+#define BATTERY_LOW_PCT 20           // aviso
+#define BATTERY_VERY_LOW_PCT 10      // aviso + volume limitado
+#define BATTERY_CRITICAL_PCT 5       // aviso final
+#define BATTERY_SHUTDOWN_PCT 3       // dorme até ligar o carregador
+#define BATTERY_SHUTDOWN_MV 3300
+#define BATTERY_VOLUME_CAP 60        // volume máximo com a bateria abaixo de 10 % (os picos do altifalante)
+#define STATUS_POLL_MS (5UL * 60UL * 1000UL)  // PUT /v1/hardware/me/status
+
 // ------------------------------------------------------------------ interface
 #define PIN_BTN_VOLUP 2
 #define PIN_BTN_VOLDN 21
@@ -52,7 +67,6 @@
 #define PIN_LED_RGB 48               // anel WS2812 (12) + barra frontal (6), em cadeia a partir de J5
 #define LED_RING_COUNT 12
 #define LED_BAR_COUNT 6
-#define PIN_VIN_SENSE 10             // divisor 100k/10k: VIN = leitura × 11
 #define BUTTON_DEBOUNCE_MS 30
 #define BUTTON_LONG_MS 5000          // MUTE premido 5 s = modo de configuração (ponto de acesso Wi-Fi)
 

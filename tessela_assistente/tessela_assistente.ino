@@ -6,6 +6,8 @@
 //  • Mensagens de voz gravadas na app: agenda e áudios no cartão microSD, tocadas à hora certa
 //    pelo relógio RTC, mesmo sem internet.
 //  • Botões VOL− · MUTE · VOL+, anel de luz e barra frontal, configuração por ponto de acesso.
+//  • Bateria (placa v1.3): carga no anel (VOL− + VOL+), avisos de bateria fraca, estado enviado à
+//    API, e deep sleep com a bateria vazia até se ligar o carregador.
 //
 // Protocolo: tessela-api/docs/DEVICE_PROTOCOL.md (v1). Compilar: ver README.md.
 
@@ -15,6 +17,7 @@
 #include "api_client.h"
 #include "app_state.h"
 #include "audio_io.h"
+#include "battery.h"
 #include "buttons.h"
 #include "config.h"
 #include "leds.h"
@@ -34,6 +37,9 @@ static uint32_t lastScheduleSync = 0;
 static uint32_t lastNtp = 0;
 static uint32_t lastWifiTry = 0;
 static uint32_t volumeChangedAt = 0;
+static uint8_t volumeBefore = 0;
+static uint32_t lastStatus = 0;
+static bool statusDirty = false;   // enviar o estado à API assim que possível
 
 static bool inConversation() {
   Mode m = app.mode;
@@ -46,6 +52,15 @@ static void endConversation(bool beep) {
   replyDone = false;
   if (beep) speakerBeep(440, 80, 20);
   setMode(app.settings.muted ? Mode::Muted : Mode::Idle);
+}
+
+// Com a bateria abaixo de 10 % e sem carregador, o volume fica limitado (os picos do altifalante
+// fazem cair a tensão da bateria e podem reiniciar o ESP32).
+static void applyVolume() {
+  const BatteryStatus &b = battery();
+  uint8_t v = app.settings.volume;
+  if (b.present && !b.powered && b.percent <= BATTERY_VERY_LOW_PCT && v > BATTERY_VOLUME_CAP) v = BATTERY_VOLUME_CAP;
+  speakerSetVolume(v);
 }
 
 static void startConversation() {
@@ -90,9 +105,10 @@ static void handleButtons() {
     case ButtonEvent::VolUp:
     case ButtonEvent::VolDown: {
       bool up = ev == ButtonEvent::VolUp;
+      volumeBefore = app.settings.volume;
       int v = (int)app.settings.volume + (up ? VOLUME_STEP : -VOLUME_STEP);
       app.settings.volume = constrain(v, 0, 100);
-      speakerSetVolume(app.settings.volume);
+      applyVolume();
       ledsVolume(app.settings.volume);
       if (!inConversation() && !schedulerPlaying()) speakerBeep(880, 60, 30);
       volumeChangedAt = millis();
@@ -108,6 +124,21 @@ static void handleButtons() {
         setMuted(!app.settings.muted);
       }
       break;
+    case ButtonEvent::Battery: {
+      // VOL− + VOL+ juntos: desfaz o passo de volume do primeiro botão e mostra a carga
+      if (volumeChangedAt && millis() - volumeChangedAt < 1500) {
+        app.settings.volume = volumeBefore;
+        applyVolume();
+      }
+      const BatteryStatus &b = battery();
+      if (b.present) {
+        ledsBattery(b.percent, b.charging);
+        if (!inConversation() && !schedulerPlaying()) speakerBeep(b.percent >= 20 ? 988 : 330, 80, 25);
+      } else {
+        ledsFlash(60, 60, 60, 600);  // placa sem medidor de bateria
+      }
+      break;
+    }
     case ButtonEvent::MuteLong:
       speakerBeep(523, 100, 25);
       provisioningStart();
@@ -183,6 +214,50 @@ static void handleRealtime() {
   }
 }
 
+static void handleBattery() {
+  batteryLoop();
+  BatteryEvent e = batteryTakeEvent();
+  if (e != BatteryEvent::None) {
+    const BatteryStatus &b = battery();
+    bool quiet = inConversation() || schedulerPlaying();
+    switch (e) {
+      case BatteryEvent::Plugged:
+        if (!quiet) {
+          speakerBeep(660, 70, 20);
+          speakerBeep(990, 90, 20);
+        }
+        ledsBattery(b.percent, true);
+        break;
+      case BatteryEvent::Unplugged:
+        ledsBattery(b.percent, false);
+        break;
+      case BatteryEvent::Low:
+      case BatteryEvent::VeryLow:
+        if (!quiet) {
+          speakerBeep(440, 120, 25);
+          speakerBeep(330, 160, 25);
+        }
+        ledsBattery(b.percent, false);
+        break;
+      case BatteryEvent::Critical:
+        speakerBeep(440, 120, 30);
+        speakerBeep(330, 120, 30);
+        speakerBeep(220, 250, 30);
+        ledsBattery(b.percent, false);
+        break;
+      default:
+        break;
+    }
+    applyVolume();
+    statusDirty = true;
+  }
+  if (batteryCritical() && !inConversation() && !schedulerPlaying()) {
+    if (app.wifiUp && app.settings.token.length()) apiSendStatus();  // a app fica a saber porquê
+    rtDisconnect();
+    batterySleepUntilCharger();
+  }
+}
+
 static void pumpMicrophone() {
   if (!inConversation() || awaitingStart) return;
   uint8_t frame[WS_FRAME_MS * AUDIO_SAMPLE_RATE / 1000 * 2];  // 32 ms = 1024 bytes
@@ -224,6 +299,11 @@ static void maintainNetwork() {
       provisioningStart();
     }
   }
+  if (idle && app.settings.token.length() && (statusDirty || lastStatus == 0 || millis() - lastStatus > STATUS_POLL_MS)) {
+    lastStatus = millis();
+    statusDirty = false;
+    apiSendStatus();
+  }
   if (app.settings.token.length()) rtConnect();  // ligação sempre pronta (menos espera depois da palavra)
 }
 
@@ -238,9 +318,14 @@ void setup() {
     app.lastError = "audio";
     setMode(Mode::Error);
   }
-  speakerSetVolume(app.settings.volume);
   app.sdOk = sdBegin();
   clockBegin();
+  batteryBegin();
+  applyVolume();
+  if (batteryCritical()) {  // acordou do deep sleep (ou ligou) com a bateria ainda vazia
+    speakerBeep(220, 250, 30);
+    batterySleepUntilCharger();
+  }
   schedulerLoad();
   frontendOk = frontendBegin();
   if (!frontendOk) app.lastError = "frente de voz (modelos)";
@@ -285,6 +370,7 @@ void loop() {
     startConversation();
   }
   handleRealtime();
+  handleBattery();
   pumpMicrophone();
   bool canPlay = !inConversation() && app.mode != Mode::Setup;
   schedulerLoop(canPlay);

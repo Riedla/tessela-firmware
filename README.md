@@ -1,7 +1,8 @@
 # Tessela Assistente — firmware (ESP32-S3)
 
-Firmware da placa **Assistente IA** (ESP32-S3-WROOM-1-N16R8, 4 × ICS-43434, MAX98357A, microSD,
-RTC DS3231, anel WS2812). Liga-se à **Tessela API** (`tessela-api`) e faz duas coisas:
+Firmware da placa **Assistente IA v1.3** (ESP32-S3-WROOM-1-N16R8, 4 × ICS-43434, MAX98357A, microSD,
+RTC DS3231, anel WS2812, **bateria LiPo com carregamento por USB-C**). Liga-se à **Tessela API**
+(`tessela-api`) e faz duas coisas:
 
 1. **Conversa em tempo real com o agente Tessela.** Chama-se pelo nome ("Hi ESP"), fala-se
    normalmente e a resposta sai pelo altifalante enquanto é gerada. Pode-se interromper a
@@ -10,7 +11,7 @@ RTC DS3231, anel WS2812). Liga-se à **Tessela API** (`tessela-api`) e faz duas 
    microSD e tocam à hora marcada, **mesmo sem internet** (relógio RTC com pilha).
 
 Protocolo: [`tessela-api/docs/DEVICE_PROTOCOL.md`](../tessela-api/docs/DEVICE_PROTOCOL.md)
-(v1 + §14 mensagens de voz). Compila com **Arduino-ESP32 3.0.5**: 1,5 MB de 3 MB, com espaço para
+(v1 + §14 mensagens de voz + §15 estado da bateria). Compila com **Arduino-ESP32 3.0.5**: 1,5 MB de 3 MB, com espaço para
 OTA.
 
 > **Estado:** compila sem erros nem avisos no nosso código. Ainda **não foi testado em hardware**
@@ -61,7 +62,8 @@ OTA.
 | Amplificador DIN · SD_MODE | 17 · 7 | | Deteção do cartão | 13 |
 | MIC3/MIC4 SD (reservado) | 18 | | RTC SDA · SCL · INT | 8 · 9 · 11 |
 | Botões VOL+ · VOL− · MUTE | 2 · 21 · 14 | | Anel WS2812 (J5) | 48 |
-| LED de estado | 12 | | VIN (divisor 100k/10k) | 10 |
+| LED de estado | 12 | | Carregador ligado (PGOOD, LOW) | 10 |
+| Medidor de bateria LC709203F | I2C 0x0B (GPIO 8/9) | | | |
 
 Os pinos estão todos em `tessela_assistente/config.h`.
 
@@ -131,6 +133,8 @@ mas **sem verificar** o servidor, e o registo avisa. Isso só serve para desenvo
 | **−** / **+** | volume (o anel mostra o nível durante 1,5 s) |
 | **MUTE** (curto) | liga/desliga os microfones (anel vermelho). Durante uma conversa: termina-a. Com uma mensagem por ouvir: toca-a |
 | **MUTE** (5 s) | modo de configuração (ponto de acesso) |
+| **−** e **+** juntos | mostra a carga da bateria no anel durante 3 s |
+| Interruptor lateral | liga/desliga o assistente (a bateria carrega mesmo desligado) |
 
 **Anel e barra de luz:**
 - laranja a respirar: a ouvir;
@@ -142,6 +146,32 @@ mas **sem verificar** o servidor, e o registo avisa. Isso só serve para desenvo
 - vermelho a piscar: erro.
 
 O LED verde de estado acende quando está ligado ao servidor.
+
+## Bateria
+
+A placa v1.3 tem uma bateria **LiPo 3,7 V 3000 mAh** (tipo 605080, com proteção e ficha JST-PH 2,0)
+no fundo da caixa, por baixo da PCB.
+
+- **Carregamento:** pelo **USB-C** (5 V), a 1 A, pelo BQ24074. O assistente funciona enquanto carrega.
+  O LED laranja ao lado do USB-C fica aceso enquanto carrega, mesmo com o assistente desligado.
+  A carga completa demora cerca de 3,5 h.
+- **Autonomia:** cerca de **20–24 h** à escuta da palavra de ativação com o Wi-Fi ligado. Conversar
+  e tocar alto gasta mais.
+- **No anel:** **−** e **+** juntos mostram a carga durante 3 s: verde ≥ 50 %, âmbar ≥ 20 %, vermelho
+  abaixo disso. Ao ligar o cabo, toca um som duplo e o anel mostra a carga. Enquanto carrega, a barra
+  frontal respira a verde.
+- **Bateria fraca:**
+  - a 20 % e a 10 %: dois tons e o nível no anel; em espera, a barra pisca a vermelho a cada 5 s;
+  - abaixo de 10 %: o volume fica limitado a 60, para os picos do altifalante não fazerem a tensão cair;
+  - a 5 %: três tons a descer;
+  - a 3 % (ou 3,3 V): o assistente entra em **deep sleep** e acorda sozinho quando se liga o cabo.
+- **Na app:** o firmware envia o estado (`PUT /v1/hardware/me/status`: %, mV, a carregar, cabo
+  ligado, sinal do Wi-Fi). Envia no arranque, a cada 5 min e sempre que algo muda. A app mostra-o em
+  `device.power`.
+- **Consola série:** `status` mostra a bateria.
+- **Outra bateria:** mudar `BATTERY_APA` em `config.h`. A tabela do LC709203F tem 0x2D para
+  2000 mAh e 0x36 para 3000 mAh. Usar sempre uma bateria **com circuito de proteção**.
+  **Confirmar a polaridade** da ficha: o + vai para o pino marcado "BAT +" (J7).
 
 ## Mensagens de voz agendadas
 
@@ -181,7 +211,9 @@ numa versão futura.
 
 ## Testes por fases (quando a placa chegar)
 
-1. **Arranque:** `status` na consola série. Confirmar memória livre, `cartao ok`, `rtc ok` e a hora.
+1. **Arranque:** `status` na consola série. Confirmar memória livre, `cartao ok`, `rtc ok`, a hora e a
+   `bateria` (% e mV).
+   Antes de ligar a bateria pela primeira vez, medir os 3,3 V só com o USB-C (sem bateria).
 2. **Altifalante:** `volume 60` deve tocar um tom.
 3. **Wi-Fi e emparelhamento:** pela página `Tessela-XXXX`. Na app, o dispositivo passa a `active`.
 4. **Microfones e palavra:** "Hi ESP" deve dar um tom e o anel laranja. Se não reagir, ver o
@@ -191,6 +223,8 @@ numa versão futura.
 6. **Barge-in:** interromper a resposta a falar.
 7. **Agenda:** criar uma mensagem na app para daqui a 2 minutos, depois `sync`, e esperar que toque.
 8. **Sem internet:** desligar o router e confirmar que a mensagem seguinte toca na mesma.
+9. **Bateria:** ligar e desligar o USB-C (som, anel, LED laranja). Depois deixar descarregar sem cabo
+   e confirmar os avisos a 20 % e 10 % e o deep sleep. Ao ligar o cabo, deve voltar a arrancar.
 
 ## Estrutura
 
@@ -207,6 +241,7 @@ tessela_assistente/
   scheduler.*             agenda no cartão, relógio, reprodução dos WAV
   rtc_clock.*             DS3231 + NTP + fuso horário
   storage.*               NVS (definições, token) e microSD
+  battery.*               medidor LC709203F, carregador (PGOOD), avisos e deep sleep
   provisioning.*          ponto de acesso + página + consola série
   buttons.*, leds.*       botões e anel de luz WS2812 (RMT)
 scripts/build.ps1, build.sh

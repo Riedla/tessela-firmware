@@ -1,4 +1,4 @@
-// Pedidos HTTP(S) à Tessela API (docs/DEVICE_PROTOCOL.md §2 e §14).
+// Pedidos HTTP(S) à Tessela API (docs/DEVICE_PROTOCOL.md §2, §14 e §15).
 #pragma once
 
 #include <Arduino.h>
@@ -8,4 +8,5 @@ enum class ApiResult : uint8_t { Ok, NotModified, Unauthorized, NetworkError, Se
 ApiResult apiPair(const String &code, String &message);  // POST /v1/hardware/pair → token na NVS
 ApiResult apiCheckToken();                              // GET /v1/hardware/me (401 = emparelhar de novo)
 ApiResult apiSyncSchedule(bool force = false);          // GET /v1/hardware/me/schedule + áudios → cartão
+ApiResult apiSendStatus();                              // PUT /v1/hardware/me/status (bateria, Wi-Fi)
 const char *apiResultName(ApiResult r);

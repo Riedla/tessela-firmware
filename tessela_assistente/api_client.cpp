@@ -7,6 +7,7 @@
 
 #include "app_state.h"
 #include "audio_io.h"
+#include "battery.h"
 #include "config.h"
 #include "rtc_clock.h"
 #include "scheduler.h"
@@ -136,6 +137,32 @@ ApiResult apiCheckToken() {
     }
   }
   return ApiResult::Ok;
+}
+
+// Estado do dispositivo (§15): bateria e Wi-Fi. A conta vê-o na app (device.power).
+ApiResult apiSendStatus() {
+  Http h;
+  if (!h.begin(apiUrl("/v1/hardware/me/status"))) return ApiResult::NetworkError;
+  h.auth();
+  h.http.addHeader("Content-Type", "application/json");
+  JsonDocument d;
+  const BatteryStatus &b = battery();
+  if (b.present) {
+    JsonObject o = d["battery"].to<JsonObject>();
+    o["percent"] = b.percent;
+    o["voltageMv"] = b.mv;
+    o["charging"] = b.charging;
+    o["powered"] = b.powered;
+  }
+  if (WiFi.isConnected()) d["wifiRssi"] = constrain((int)WiFi.RSSI(), -127, 0);
+  d["uptimeSeconds"] = (uint32_t)(millis() / 1000);
+  String body;
+  serializeJson(d, body);
+  int status = h.http.PUT(body);
+  h.http.end();
+  if (status == 401 || status == 404) return ApiResult::Unauthorized;
+  if (status <= 0) return ApiResult::NetworkError;
+  return status == 204 || status == 200 ? ApiResult::Ok : ApiResult::ServerError;
 }
 
 // Descarrega um áudio para o cartão (ficheiro temporário + rename: nunca fica um WAV a meio).

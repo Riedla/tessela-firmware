@@ -7,6 +7,7 @@
 #include "api_client.h"
 #include "app_state.h"
 #include "audio_io.h"
+#include "battery.h"
 #include "config.h"
 #include "rtc_clock.h"
 #include "scheduler.h"
@@ -140,6 +141,13 @@ static void printStatus() {
                 app.settings.deviceId.c_str(), app.wsReady ? "pronto" : "-");
   Serial.printf("hora %s (%s)  rtc %s  cartao %s  mensagens %u\n", clockIso().c_str(), app.settings.timezone.c_str(),
                 app.rtcOk ? "ok" : "falha", app.sdOk ? "ok" : "falha", (unsigned)schedulerCount());
+  const BatteryStatus &b = battery();
+  if (b.present) {
+    Serial.printf("bateria %u%% (%u mV)  %s\n", b.percent, b.mv,
+                  b.charging ? "a carregar" : b.powered ? "carregada (cabo ligado)" : "sem cabo");
+  } else {
+    Serial.printf("bateria: medidor nao responde  cabo %s\n", b.powered ? "ligado" : "desligado");
+  }
   Serial.printf("volume %u  microfones %s  memoria livre %u / psram %u\n", app.settings.volume,
                 app.settings.muted ? "desligados" : "ligados", (unsigned)ESP.getFreeHeap(), (unsigned)ESP.getFreePsram());
 }

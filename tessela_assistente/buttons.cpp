@@ -38,6 +38,7 @@ ButtonEvent buttonsPoll() {
     if (raw) {
       b.pressedAt = now;
       b.longFired = false;
+      if ((i == 0 && btns[1].stable) || (i == 1 && btns[0].stable)) return ButtonEvent::Battery;
       if (i == 0) return ButtonEvent::VolUp;
       if (i == 1) return ButtonEvent::VolDown;
     } else if (i == 2 && !b.longFired) {
