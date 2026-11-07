@@ -1,0 +1,213 @@
+# Tessela Assistente — firmware (ESP32-S3)
+
+Firmware da placa **Assistente IA** (ESP32-S3-WROOM-1-N16R8, 4 × ICS-43434, MAX98357A, microSD,
+RTC DS3231, anel WS2812). Liga-se à **Tessela API** (`tessela-api`) e faz duas coisas:
+
+1. **Conversa em tempo real com o agente Tessela.** Chama-se pelo nome ("Hi ESP"), fala-se
+   normalmente e a resposta sai pelo altifalante enquanto é gerada. Pode-se interromper a
+   resposta a falar e, durante 8 s depois de cada resposta, continuar a conversa sem repetir o nome.
+2. **Mensagens de voz agendadas.** As gravações feitas na app (`voice_message`) ficam no cartão
+   microSD e tocam à hora marcada, **mesmo sem internet** (relógio RTC com pilha).
+
+Protocolo: [`tessela-api/docs/DEVICE_PROTOCOL.md`](../tessela-api/docs/DEVICE_PROTOCOL.md)
+(v1 + §14 mensagens de voz). Compila com **Arduino-ESP32 3.0.5**: 1,5 MB de 3 MB, com espaço para
+OTA.
+
+> **Estado:** compila sem erros nem avisos no nosso código. Ainda **não foi testado em hardware**
+> (a placa não está fabricada). Ao receber a placa, seguir os testes por fases do fim deste ficheiro.
+
+## Como funciona
+
+```
+ MIC1 ─┐                       ┌─► WakeNet "Hi ESP" ─────────► começa a conversa
+ MIC2 ─┼─► AFE (ESP-SR) ───────┼─► VAD local
+ eco  ─┘   AEC · BSS · NS      └─► áudio limpo 16 kHz ──► wss://…/v1/realtime ──► agente (STT → Claude → TTS)
+  ▲                                                                     │
+  └──────── referência ◄── altifalante ◄── buffer 64 KB ◄── voz da resposta (PCM16 16 kHz)
+
+ RTC DS3231 ──► agendador ──► /tessela/audio/<etag>.wav (microSD) ──► altifalante
+ GET /v1/hardware/me/schedule (ETag, a cada 5 min) ──► schedule.json + WAVs no cartão
+```
+
+- **Cancelamento de eco (AEC):** a cópia exata do que vai para o altifalante entra no AFE como
+  referência. Por isso o firmware pede ao servidor `vadBargeIn: true`: a pessoa pode interromper a
+  resposta a falar.
+- **Fim da fala:** quem decide é o servidor (`vad: "server"`), com o áudio já limpo.
+- **Ligação permanente:** o WebSocket fica aberto (ping a cada 60 s), por isso não há o atraso
+  do TLS depois da palavra de ativação. Se a ligação ainda estiver a abrir, o AFE guarda ~1 s de
+  áudio.
+
+### Tarefas FreeRTOS
+
+| Tarefa | Núcleo | O que faz |
+|---|---|---|
+| `afe_feed` | 0 | lê MIC1/MIC2 (I2S0, 32 bits) + referência e alimenta o AFE em blocos de 32 ms |
+| `afe_fetch` | 1 | palavra de ativação, VAD, nível; entrega o áudio limpo ao WebSocket |
+| `altifalante` | 1 | buffer → volume → I2S1 (MAX98357A) ao ritmo real; copia para a referência |
+| `loop()` | 1 | Wi-Fi, WebSocket, máquina de estados, agendador, botões, LEDs, consola |
+
+### Estados
+
+`em_espera` → (palavra) → `a_ouvir` → (`vad.end`) → `a_pensar` → (`audio.start`) → `a_falar` →
+(fim da voz) → `seguimento` (8 s) → `em_espera`. Também: `mensagem` (agendada), `silencio`
+(microfones desligados), `configuracao`, `erro`.
+
+## Ligações (placa Assistente IA v1.2)
+
+| Função | GPIO | | Função | GPIO |
+|---|---|---|---|---|
+| MIC1/MIC2 SCK · WS · SD | 4 · 5 · 6 | | microSD CLK · CMD | 39 · 38 |
+| I2S1 BCLK · WS (amp + MIC3/4) | 15 · 16 | | microSD D0 · D1 · D2 · D3 | 40 · 41 · 42 · 47 |
+| Amplificador DIN · SD_MODE | 17 · 7 | | Deteção do cartão | 13 |
+| MIC3/MIC4 SD (reservado) | 18 | | RTC SDA · SCL · INT | 8 · 9 · 11 |
+| Botões VOL+ · VOL− · MUTE | 2 · 21 · 14 | | Anel WS2812 (J5) | 48 |
+| LED de estado | 12 | | VIN (divisor 100k/10k) | 10 |
+
+Os pinos estão todos em `tessela_assistente/config.h`.
+
+## Compilar e gravar
+
+Precisa do Arduino IDE 2 (traz o `arduino-cli`) ou do `arduino-cli`, com a plataforma
+**esp32:esp32 3.0.5** e a biblioteca **ArduinoJson 7.x**. O script instala a **WebSockets 2.6.1**
+só dentro deste projeto (pasta `.arduino/`), sem mexer nas bibliotecas globais. A versão 2.5.x
+não compila com o Arduino-ESP32 3.x.
+
+```powershell
+.\scripts\build.ps1               # compila
+.\scripts\build.ps1 -Port COM5    # compila e grava pela USB-C
+```
+
+```bash
+./scripts/build.sh                # compila
+./scripts/build.sh /dev/ttyACM0   # compila e grava
+```
+
+Opções da placa (FQBN): `esp32:esp32:esp32s3:PSRAM=opi,FlashSize=16M,FlashMode=qio,PartitionScheme=esp_sr_16,USBMode=hwcdc,CDCOnBoot=cdc`.
+A partição **`esp_sr_16`** é obrigatória: grava os modelos de voz (`srmodels.bin`) na partição
+`model`. Primeira gravação: carregar em BOOT, tocar em RESET e largar o BOOT.
+
+No Arduino IDE: placa "ESP32S3 Dev Module", PSRAM "OPI PSRAM", Flash 16 MB, partição
+"ESP SR 16M", USB CDC On Boot "Enabled", e em Sketchbook a pasta `.arduino/user` (ou
+instalar a WebSockets 2.6.1).
+
+## Primeira configuração
+
+1. **Na app Tessela:** criar o dispositivo físico (`POST /v1/hardware`). Aparece um código como
+   `K7PM-Q2XD`, válido 10 minutos.
+2. **No assistente** (sem configuração, o anel pisca a azul): ligar o telemóvel à rede Wi-Fi
+   **`Tessela-XXXX`**. Abre-se a página de configuração; se não abrir, ir a `http://192.168.4.1`.
+   Preencher a rede Wi-Fi, o servidor (`https://api…`) e o código, e carregar em **Guardar e ligar**.
+3. O assistente emparelha (`POST /v1/hardware/pair`), guarda o token na NVS, reinicia, liga ao
+   tempo real e toca dois tons. Está pronto: dizer **"Hi ESP"** e fazer a pergunta.
+
+Também pela porta série (115200 baud, USB-C):
+
+```
+wifi A-Minha-Rede a-palavra-passe
+server https://api.exemplo.co.mz
+pair K7PM-Q2XD
+status
+```
+
+Outros comandos: `volume 0-100`, `sync` (descarregar a agenda já), `setup` (abrir o ponto de
+acesso), `forget` (apagar o token), `reboot`.
+
+**Voltar a configurar:** segurar o **MUTE durante 5 s** abre o ponto de acesso `Tessela-XXXX`.
+
+### TLS
+
+Em produção a API está em `https://`/`wss://`. Para o dispositivo **verificar** o servidor, há
+duas opções: pôr o certificado da CA raiz (PEM, ex.: ISRG Root X1 do Let's Encrypt) no cartão em
+**`/tessela/ca.pem`**, ou colá-lo em `TESSELA_ROOT_CA` (`config.h`). Sem CA, a ligação vai cifrada
+mas **sem verificar** o servidor, e o registo avisa. Isso só serve para desenvolvimento.
+
+## Utilização
+
+| Ação | Resultado |
+|---|---|
+| "Hi ESP" + pergunta | conversa com o agente; o anel acende a laranja |
+| Falar durante a resposta | interrompe a resposta (barge-in) e faz outra pergunta |
+| Nos 8 s a seguir à resposta | continuar a conversa sem dizer "Hi ESP" |
+| **−** / **+** | volume (o anel mostra o nível durante 1,5 s) |
+| **MUTE** (curto) | liga/desliga os microfones (anel vermelho). Durante uma conversa: termina-a. Com uma mensagem por ouvir: toca-a |
+| **MUTE** (5 s) | modo de configuração (ponto de acesso) |
+
+**Anel e barra de luz:**
+- laranja a respirar: a ouvir;
+- laranja a rodar: a pensar;
+- laranja a pulsar: a falar;
+- âmbar: mensagem agendada (a piscar quando está à espera de ser ouvida);
+- vermelho fixo: microfones desligados;
+- azul a piscar: configuração;
+- vermelho a piscar: erro.
+
+O LED verde de estado acende quando está ligado ao servidor.
+
+## Mensagens de voz agendadas
+
+- **Sincronização:** a cada 5 minutos (e no arranque), `GET /v1/hardware/me/schedule` com
+  `If-None-Match`. Sem alterações, o servidor responde `304` e não se gastam dados.
+- **Áudios:** chegam em WAV PCM16 mono 16 kHz (`GET /v1/hardware/me/audio/<id>`) e ficam em
+  `/tessela/audio/<etag>.wav`. Só se descarrega o que muda. Cada ficheiro é gravado primeiro como
+  temporário e depois renomeado, por isso um corte de luz nunca deixa um WAV a meio.
+- **Sem internet:** a agenda fica em `/tessela/schedule.json` e continua a tocar.
+- **Relógio:** o RTC guarda a hora em UTC e o NTP acerta-o a cada 6 h. O fuso vem da agenda
+  (`Africa/Maputo` → `CAT-2`); ver `rtc_clock.cpp`.
+- **Regras de reprodução:**
+  - `autoPlay: true`: dois tons e a mensagem.
+  - `autoPlay: false`: um tom e o anel a piscar a âmbar; um toque no MUTE toca a mensagem.
+  - Durante uma conversa, a mensagem espera e toca a seguir.
+  - `scheduleEnabled: false` (definição do dispositivo na app) desliga a agenda.
+
+## Palavra de ativação (nome do assistente)
+
+O Arduino-ESP32 traz um único modelo WakeNet: **"Hi ESP"** (`wn9_hiesp`), que funciona logo.
+Para um **nome próprio** (ex.: "Olá Nexus") há dois caminhos:
+
+1. **WakeNet personalizado da Espressif.** É treinado pela Espressif (serviço pago) ou com o
+   processo do ESP-SR. Depois gera-se o `srmodels.bin` com o modelo novo, muda-se
+   `WAKENET_KEYWORD` em `config.h` e grava-se.
+2. **Modelos de outros nomes já incluídos no ESP-SR** (ex.: `jarvis`, `sophia`, `computer`).
+   Exige compilar o `srmodels.bin` com ESP-IDF e escolher o modelo no `menuconfig`.
+
+Escolher um nome de 3–4 sílabas, pouco comum no dia a dia, reduz as ativações falsas.
+
+## Microfones
+
+O AFE do ESP32-S3 usa **2 microfones + 1 referência**. Este firmware usa o **MIC1 + MIC2**
+(I2S0, par estéreo do array) para AEC, BSS/beamforming, NS e WakeNet. O **MIC3/MIC4** (I2S1 RX,
+GPIO 18) ficam ligados mas reservados, para escolher o melhor par ou estimar a direção de quem fala
+numa versão futura.
+
+## Testes por fases (quando a placa chegar)
+
+1. **Arranque:** `status` na consola série. Confirmar memória livre, `cartao ok`, `rtc ok` e a hora.
+2. **Altifalante:** `volume 60` deve tocar um tom.
+3. **Wi-Fi e emparelhamento:** pela página `Tessela-XXXX`. Na app, o dispositivo passa a `active`.
+4. **Microfones e palavra:** "Hi ESP" deve dar um tom e o anel laranja. Se não reagir, ver o
+   ganho em `MIC_SHIFT`.
+5. **Conversa:** perguntar "o que tenho hoje?". Medir a latência no registo do servidor
+   (`reply.end.latency`).
+6. **Barge-in:** interromper a resposta a falar.
+7. **Agenda:** criar uma mensagem na app para daqui a 2 minutos, depois `sync`, e esperar que toque.
+8. **Sem internet:** desligar o router e confirmar que a mensagem seguinte toca na mesma.
+
+## Estrutura
+
+```
+tessela_assistente/
+  tessela_assistente.ino  arranque + máquina de estados
+  config.h                pinos e constantes
+  app_state.*             estado partilhado
+  audio_io.*              I2S dos microfones e do altifalante, volume, referência do AEC
+  voice_frontend.*        AFE do ESP-SR (AEC, BSS, NS, VAD, WakeNet)
+  afe_config.c            AFE_CONFIG_DEFAULT (macro só para C)
+  realtime.*              WebSocket /v1/realtime (protocolo v1)
+  api_client.*            emparelhamento, /me, agenda e downloads
+  scheduler.*             agenda no cartão, relógio, reprodução dos WAV
+  rtc_clock.*             DS3231 + NTP + fuso horário
+  storage.*               NVS (definições, token) e microSD
+  provisioning.*          ponto de acesso + página + consola série
+  buttons.*, leds.*       botões e anel de luz WS2812 (RMT)
+scripts/build.ps1, build.sh
+```

@@ -1,0 +1,7 @@
+build/
+.arduino/
+*.bin
+*.elf
+*.map
+.vscode/
+.DS_Store
