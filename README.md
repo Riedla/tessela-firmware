@@ -205,7 +205,7 @@ Escolher um nome de 3–4 sílabas, pouco comum no dia a dia, reduz as ativaçõ
 ## Microfones
 
 A placa v1.4 tem **4 × TDK T5838**, microfones digitais **PDM** a **1,8 V** (regulador U9). Ligam ao
-ESP32-S3 através dos tradutores de nível U10 (CLK, THSEL, DATA0, DATA1) e U11 (WAKE).
+ESP32-S3 através do tradutor de nível U10 (CLK, THSEL, DATA0, DATA1) e do transístor Q2 (WAKE).
 
 - **Relógio:** o PDM corre no I2S0 com downsampling × 128, ou seja CLK = 2,048 MHz. É o modo
   "High Quality" do T5838, que precisa de 2,0–3,7 MHz. O ESP-IDF usa × 64 por omissão, o que dava 1,024 MHz:
@@ -216,7 +216,7 @@ ESP32-S3 através dos tradutores de nível U10 (CLK, THSEL, DATA0, DATA1) e U11 
 - **MK3/MK4 (DATA1, GPIO 18):** ficam ligados mas reservados. O ESP32-S3 lê até 4 linhas PDM.
 - **Ganho:** o T5838 tem −41 dBFS de sensibilidade, por isso o firmware aplica +18 dB
   (`MIC_GAIN_SHIFT` em `config.h`).
-- **Acordar com som (AAD):** o MK1 tem o THSEL (GPIO 5) e o WAKE (GPIO 1, via U11) ligados. Assim, o T5838
+- **Acordar com som (AAD):** o MK1 tem o THSEL (GPIO 5) e o WAKE (GPIO 1, via transístor Q2: LOW = som) ligados. Assim, o T5838
   pode detetar som sozinho, com cerca de 20 µA, e acordar o ESP32. O firmware deixa o THSEL em LOW, ou
   seja, a função está desligada. Ativá-la (protocolo de configuração pelo THSEL, datasheet DS-000383 §5)
   fica para uma versão seguinte, para poupar bateria em espera.

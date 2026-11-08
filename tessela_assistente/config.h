@@ -17,7 +17,7 @@
 #define PIN_PDM_DATA0 6
 #define PIN_PDM_DATA1 18
 #define PIN_MIC_THSEL 5              // configuração da detecção de actividade acústica (AAD) do MK1; LOW = desligada
-#define PIN_MIC_WAKE 1               // HIGH = o MK1 detectou som (AAD); serve para acordar o ESP32
+#define PIN_MIC_WAKE 1               // LOW = o MK1 detectou som (AAD; invertido pelo transístor Q2, pull-up R28)
 // O T5838 tem −41 dBFS de sensibilidade (o ICS-43434 tinha −26): ganho digital de +18 dB (× 8).
 #define MIC_GAIN_SHIFT 3
 // I2S1: amplificador MAX98357A (TX).

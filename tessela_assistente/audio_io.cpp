@@ -110,7 +110,7 @@ bool audioBegin() {
   // Criado antes do altifalante para ficar com o I2S0 (o único com PDM RX).
   pinMode(PIN_MIC_THSEL, OUTPUT);
   digitalWrite(PIN_MIC_THSEL, LOW);  // sem AAD: o microfone funciona só pelo relógio
-  pinMode(PIN_MIC_WAKE, INPUT);      // pull-down de 100k na placa (R28)
+  pinMode(PIN_MIC_WAKE, INPUT);      // pull-up de 10k na placa (R28); Q2 puxa a LOW quando o MK1 detecta som
   i2s_chan_config_t cc = I2S_CHANNEL_DEFAULT_CONFIG(I2S_NUM_0, I2S_ROLE_MASTER);
   cc.dma_desc_num = 6;
   cc.dma_frame_num = 256;
@@ -159,7 +159,7 @@ size_t micRead(int16_t *left, int16_t *right, size_t frames) {
   return done;
 }
 
-bool micWakeActive() { return digitalRead(PIN_MIC_WAKE) == HIGH; }
+bool micWakeActive() { return digitalRead(PIN_MIC_WAKE) == LOW; }
 
 size_t speakerWrite(const uint8_t *pcm, size_t len, uint32_t waitMs) {
   if (!spkBuf || len == 0) return 0;
