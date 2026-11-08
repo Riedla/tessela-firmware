@@ -1,13 +1,14 @@
 #include "audio_io.h"
 
 #include <ESP_I2S.h>
+#include <driver/i2s_pdm.h>
 #include <esp_heap_caps.h>
 #include <freertos/stream_buffer.h>
 #include <math.h>
 
 #include "config.h"
 
-static I2SClass i2sMic;
+static i2s_chan_handle_t micChan = nullptr;  // I2S0 em PDM RX (driver do ESP-IDF: precisa do downsampling ×128)
 static I2SClass i2sSpk;
 
 static StreamBufferHandle_t spkBuf = nullptr;
@@ -105,10 +106,23 @@ bool audioBegin() {
   }
   spkBuf = xStreamBufferCreateStatic(SPEAKER_BUFFER_BYTES, 2, storage, &spkBufStruct);
 
-  // Microfones: I2S0 standard, 32 bits, estéreo (MIC1 = L, MIC2 = R).
-  i2sMic.setPins(PIN_MIC_SCK, PIN_MIC_WS, -1, PIN_MIC_SD);
-  if (!i2sMic.begin(I2S_MODE_STD, AUDIO_SAMPLE_RATE, I2S_DATA_BIT_WIDTH_32BIT, I2S_SLOT_MODE_STEREO)) {
-    log_e("I2S dos microfones falhou");
+  // Microfones T5838: I2S0 em PDM RX, 16 bits, estéreo (esquerda = MK2, direita = MK1).
+  // Criado antes do altifalante para ficar com o I2S0 (o único com PDM RX).
+  pinMode(PIN_MIC_THSEL, OUTPUT);
+  digitalWrite(PIN_MIC_THSEL, LOW);  // sem AAD: o microfone funciona só pelo relógio
+  pinMode(PIN_MIC_WAKE, INPUT);      // pull-down de 100k na placa (R28)
+  i2s_chan_config_t cc = I2S_CHANNEL_DEFAULT_CONFIG(I2S_NUM_0, I2S_ROLE_MASTER);
+  cc.dma_desc_num = 6;
+  cc.dma_frame_num = 256;
+  i2s_pdm_rx_config_t pc = {
+      .clk_cfg = I2S_PDM_RX_CLK_DEFAULT_CONFIG(AUDIO_SAMPLE_RATE),
+      .slot_cfg = I2S_PDM_RX_SLOT_DEFAULT_CONFIG(I2S_DATA_BIT_WIDTH_16BIT, I2S_SLOT_MODE_STEREO),
+      .gpio_cfg = {.clk = (gpio_num_t)PIN_PDM_CLK, .din = (gpio_num_t)PIN_PDM_DATA0, .invert_flags = {.clk_inv = false}},
+  };
+  pc.clk_cfg.dn_sample_mode = I2S_PDM_DSR_16S;  // CLK = 128 × 16 kHz = 2,048 MHz (o T5838 precisa de 2,0–3,7 MHz)
+  if (i2s_new_channel(&cc, nullptr, &micChan) != ESP_OK || i2s_channel_init_pdm_rx_mode(micChan, &pc) != ESP_OK ||
+      i2s_channel_enable(micChan) != ESP_OK) {
+    log_e("PDM dos microfones falhou");
     return false;
   }
   // Altifalante: I2S1 standard, 16 bits, estéreo (o MAX98357A toca o canal esquerdo).
@@ -122,21 +136,21 @@ bool audioBegin() {
 }
 
 size_t micRead(int16_t *left, int16_t *right, size_t frames) {
-  static int32_t raw[512 * 2];
+  static int16_t raw[512 * 2];
   size_t done = 0;
   while (done < frames) {
     size_t chunk = frames - done;
     if (chunk > 512) chunk = 512;
-    size_t want = chunk * 2 * sizeof(int32_t);
+    size_t want = chunk * 2 * sizeof(int16_t);
     size_t got = 0;
     while (got < want) {
-      size_t r = i2sMic.readBytes((char *)raw + got, want - got);
-      if (r == 0) vTaskDelay(1);
+      size_t r = 0;
+      if (i2s_channel_read(micChan, (uint8_t *)raw + got, want - got, &r, pdMS_TO_TICKS(100)) != ESP_OK && r == 0) vTaskDelay(1);
       got += r;
     }
     for (size_t i = 0; i < chunk; i++) {
-      int32_t l = raw[2 * i] >> MIC_SHIFT;
-      int32_t r = raw[2 * i + 1] >> MIC_SHIFT;
+      int32_t l = (int32_t)raw[2 * i] << MIC_GAIN_SHIFT;
+      int32_t r = (int32_t)raw[2 * i + 1] << MIC_GAIN_SHIFT;
       left[done + i] = (int16_t)constrain(l, -32768, 32767);
       right[done + i] = (int16_t)constrain(r, -32768, 32767);
     }
@@ -144,6 +158,8 @@ size_t micRead(int16_t *left, int16_t *right, size_t frames) {
   }
   return done;
 }
+
+bool micWakeActive() { return digitalRead(PIN_MIC_WAKE) == HIGH; }
 
 size_t speakerWrite(const uint8_t *pcm, size_t len, uint32_t waitMs) {
   if (!spkBuf || len == 0) return 0;

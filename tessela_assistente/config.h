@@ -1,27 +1,29 @@
-// Tessela Assistente — configuração da placa "Assistente IA" v1.3 (ESP32-S3-WROOM-1-N16R8, com bateria).
+// Tessela Assistente — configuração da placa "Assistente IA" v1.4 (ESP32-S3-WROOM-1-N16R8, bateria, microfones T5838).
 // Os pinos seguem o esquemático (Assistente_IA.kicad_sch / LEIA-ME.md da placa).
 #pragma once
 
 #include <Arduino.h>
 
-#define FIRMWARE_VERSION "1.1.0"
+#define FIRMWARE_VERSION "1.2.0"
 #define DEVICE_MODEL "tessela-assistente-esp32s3"
 
 // ------------------------------------------------------------------ áudio
 #define AUDIO_SAMPLE_RATE 16000      // microfones, AFE, WebSocket e altifalante (protocolo v1: 16 kHz)
 
-// I2S0: MIC1 (L) + MIC2 (R), ICS-43434 — par estéreo usado pelo AFE (AEC + BSS + NS + VAD + WakeNet)
-#define PIN_MIC_SCK 4
-#define PIN_MIC_WS 5
-#define PIN_MIC_SD 6
-// Os ICS-43434 entregam 24 bits num slot de 32; >> 14 dá PCM16 com +12 dB de ganho digital.
-#define MIC_SHIFT 14
-
-// I2S1: amplificador MAX98357A (TX). MIC3/MIC4 (RX no mesmo I2S1, pino 18) ficam reservados.
+// Microfones: 4 × TDK T5838 PDM a 1,8 V (placa v1.4), através dos tradutores de nível U10/U11.
+// PDM no I2S0 (o único com PDM RX no ESP32-S3): CLK comum; DATA0 = MK2 (esq.) + MK1 (dir.);
+// DATA1 = MK4 + MK3 (reservado). CLK = 128 × 16 kHz = 2,048 MHz → modo "High Quality" do T5838.
+#define PIN_PDM_CLK 4
+#define PIN_PDM_DATA0 6
+#define PIN_PDM_DATA1 18
+#define PIN_MIC_THSEL 5              // configuração da detecção de actividade acústica (AAD) do MK1; LOW = desligada
+#define PIN_MIC_WAKE 1               // HIGH = o MK1 detectou som (AAD); serve para acordar o ESP32
+// O T5838 tem −41 dBFS de sensibilidade (o ICS-43434 tinha −26): ganho digital de +18 dB (× 8).
+#define MIC_GAIN_SHIFT 3
+// I2S1: amplificador MAX98357A (TX).
 #define PIN_I2S1_BCLK 15
 #define PIN_I2S1_WS 16
 #define PIN_AMP_DIN 17
-#define PIN_MIC34_SD 18
 #define PIN_AMP_SD 7                 // HIGH = amplificador ligado (canal esquerdo); LOW = desligado
 
 #define SPEAKER_BUFFER_BYTES (64 * 1024)  // ~2 s a 16 kHz (o servidor envia no máximo 0,6 s à frente)

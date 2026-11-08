@@ -1,4 +1,4 @@
-// Microfones (I2S0, MIC1+MIC2) e altifalante (I2S1, MAX98357A), PCM16 mono a 16 kHz.
+// Microfones (T5838 PDM no I2S0, MK1+MK2) e altifalante (I2S1, MAX98357A), PCM16 a 16 kHz.
 //
 // O altifalante tem uma tarefa própria que tira áudio de um buffer circular (o WebSocket e o
 // leitor de WAV só escrevem lá, nunca bloqueiam) e escreve no I2S ao ritmo real. Cada amostra
@@ -22,4 +22,5 @@ void speakerBeep(uint16_t freqHz, uint16_t ms, uint8_t level = 40);  // som curt
 
 // --- microfones e referência (usados pelo voice_frontend)
 size_t micRead(int16_t *left, int16_t *right, size_t frames);  // bloqueia até ter `frames` amostras
+bool micWakeActive();  // WAKE do MK1 (detecção de actividade acústica, se configurada)
 void referenceRead(int16_t *out, size_t frames);               // o que foi tocado (ou zeros)

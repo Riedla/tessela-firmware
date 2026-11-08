@@ -1,6 +1,6 @@
 # Tessela Assistente — firmware (ESP32-S3)
 
-Firmware da placa **Assistente IA v1.3** (ESP32-S3-WROOM-1-N16R8, 4 × ICS-43434, MAX98357A, microSD,
+Firmware da placa **Assistente IA v1.4** (ESP32-S3-WROOM-1-N16R8, 4 × TDK T5838 PDM, MAX98357A, microSD,
 RTC DS3231, anel WS2812, **bateria LiPo com carregamento por USB-C**). Liga-se à **Tessela API**
 (`tessela-api`) e faz duas coisas:
 
@@ -42,7 +42,7 @@ OTA.
 
 | Tarefa | Núcleo | O que faz |
 |---|---|---|
-| `afe_feed` | 0 | lê MIC1/MIC2 (I2S0, 32 bits) + referência e alimenta o AFE em blocos de 32 ms |
+| `afe_feed` | 0 | lê MK1/MK2 (PDM no I2S0, 16 bits) + referência e alimenta o AFE em blocos de 32 ms |
 | `afe_fetch` | 1 | palavra de ativação, VAD, nível; entrega o áudio limpo ao WebSocket |
 | `altifalante` | 1 | buffer → volume → I2S1 (MAX98357A) ao ritmo real; copia para a referência |
 | `loop()` | 1 | Wi-Fi, WebSocket, máquina de estados, agendador, botões, LEDs, consola |
@@ -57,10 +57,10 @@ OTA.
 
 | Função | GPIO | | Função | GPIO |
 |---|---|---|---|---|
-| MIC1/MIC2 SCK · WS · SD | 4 · 5 · 6 | | microSD CLK · CMD | 39 · 38 |
-| I2S1 BCLK · WS (amp + MIC3/4) | 15 · 16 | | microSD D0 · D1 · D2 · D3 | 40 · 41 · 42 · 47 |
+| PDM CLK · THSEL · DATA0 (MK1/MK2) | 4 · 5 · 6 | | microSD CLK · CMD | 39 · 38 |
+| I2S1 BCLK · WS (amplificador) | 15 · 16 | | microSD D0 · D1 · D2 · D3 | 40 · 41 · 42 · 47 |
 | Amplificador DIN · SD_MODE | 17 · 7 | | Deteção do cartão | 13 |
-| MIC3/MIC4 SD (reservado) | 18 | | RTC SDA · SCL · INT | 8 · 9 · 11 |
+| PDM DATA1 (MK3/MK4, reservado) · WAKE | 18 · 1 | | RTC SDA · SCL · INT | 8 · 9 · 11 |
 | Botões VOL+ · VOL− · MUTE | 2 · 21 · 14 | | Anel WS2812 (J5) | 48 |
 | LED de estado | 12 | | Carregador ligado (PGOOD, LOW) | 10 |
 | Medidor de bateria LC709203F | I2C 0x0B (GPIO 8/9) | | | |
@@ -149,7 +149,7 @@ O LED verde de estado acende quando está ligado ao servidor.
 
 ## Bateria
 
-A placa v1.3 tem uma bateria **LiPo 3,7 V 3000 mAh** (tipo 605080, com proteção e ficha JST-PH 2,0)
+A placa (v1.3 em diante) tem uma bateria **LiPo 3,7 V 3000 mAh** (tipo 605080, com proteção e ficha JST-PH 2,0)
 no fundo da caixa, por baixo da PCB.
 
 - **Carregamento:** pelo **USB-C** (5 V), a 1 A, pelo BQ24074. O assistente funciona enquanto carrega.
@@ -204,10 +204,22 @@ Escolher um nome de 3–4 sílabas, pouco comum no dia a dia, reduz as ativaçõ
 
 ## Microfones
 
-O AFE do ESP32-S3 usa **2 microfones + 1 referência**. Este firmware usa o **MIC1 + MIC2**
-(I2S0, par estéreo do array) para AEC, BSS/beamforming, NS e WakeNet. O **MIC3/MIC4** (I2S1 RX,
-GPIO 18) ficam ligados mas reservados, para escolher o melhor par ou estimar a direção de quem fala
-numa versão futura.
+A placa v1.4 tem **4 × TDK T5838**, microfones digitais **PDM** a **1,8 V** (regulador U9). Ligam ao
+ESP32-S3 através dos tradutores de nível U10 (CLK, THSEL, DATA0, DATA1) e U11 (WAKE).
+
+- **Relógio:** o PDM corre no I2S0 com downsampling × 128, ou seja CLK = 2,048 MHz. É o modo
+  "High Quality" do T5838, que precisa de 2,0–3,7 MHz. O ESP-IDF usa × 64 por omissão, o que dava 1,024 MHz:
+  um relógio fora dos modos do microfone. Por isso o firmware usa o driver `i2s_pdm` do ESP-IDF
+  e não o `ESP_I2S`.
+- **Canais:** a linha DATA0 leva o MK2 (esquerda, SELECT = 1,8 V) e o MK1 (direita, SELECT = GND).
+- **Processamento:** o AFE usa **2 microfones + 1 referência** (AEC, BSS, NS, WakeNet).
+- **MK3/MK4 (DATA1, GPIO 18):** ficam ligados mas reservados. O ESP32-S3 lê até 4 linhas PDM.
+- **Ganho:** o T5838 tem −41 dBFS de sensibilidade, por isso o firmware aplica +18 dB
+  (`MIC_GAIN_SHIFT` em `config.h`).
+- **Acordar com som (AAD):** o MK1 tem o THSEL (GPIO 5) e o WAKE (GPIO 1, via U11) ligados. Assim, o T5838
+  pode detetar som sozinho, com cerca de 20 µA, e acordar o ESP32. O firmware deixa o THSEL em LOW, ou
+  seja, a função está desligada. Ativá-la (protocolo de configuração pelo THSEL, datasheet DS-000383 §5)
+  fica para uma versão seguinte, para poupar bateria em espera.
 
 ## Testes por fases (quando a placa chegar)
 
@@ -216,8 +228,8 @@ numa versão futura.
    Antes de ligar a bateria pela primeira vez, medir os 3,3 V só com o USB-C (sem bateria).
 2. **Altifalante:** `volume 60` deve tocar um tom.
 3. **Wi-Fi e emparelhamento:** pela página `Tessela-XXXX`. Na app, o dispositivo passa a `active`.
-4. **Microfones e palavra:** "Hi ESP" deve dar um tom e o anel laranja. Se não reagir, ver o
-   ganho em `MIC_SHIFT`.
+4. **Microfones e palavra:** medir 1,8 V na saída do U9 e 2,048 MHz no CLK (pino 6 de um microfone). "Hi ESP" deve
+   dar um tom e o anel laranja. Se não reagir, ajustar o ganho em `MIC_GAIN_SHIFT`.
 5. **Conversa:** perguntar "o que tenho hoje?". Medir a latência no registo do servidor
    (`reply.end.latency`).
 6. **Barge-in:** interromper a resposta a falar.
